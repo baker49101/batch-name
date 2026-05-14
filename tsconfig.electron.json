@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "rootDir": ".",
+    "outDir": "dist-electron"
+  },
+  "include": ["electron/main.ts", "electron/preload.cts", "src/shared/**/*.ts"],
+  "exclude": ["electron/**/*.test.ts", "src/**/*.test.ts"]
+}

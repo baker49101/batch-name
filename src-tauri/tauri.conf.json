@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "快捷批量重命名",
+  "version": "0.1.0",
+  "identifier": "com.local.quick-batch-renamer",
+  "build": {
+    "beforeDevCommand": "npm run dev:renderer",
+    "beforeBuildCommand": "npm run build:renderer",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../dist",
+    "removeUnusedCommands": true
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "快捷批量重命名",
+        "width": 1320,
+        "height": 860,
+        "minWidth": 1060,
+        "minHeight": 720,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "useLocalToolsDir": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

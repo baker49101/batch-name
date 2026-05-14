@@ -1,0 +1,88 @@
+{
+  "name": "quick-batch-renamer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "人人都能用的小体积跨平台文件批量重命名桌面工具",
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "npm run dev:tauri",
+    "dev:electron": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && npm run build:electron && electron . --renderer-url=http://127.0.0.1:5173\"",
+    "dev:tauri": "tauri dev",
+    "dev:renderer": "vite --host 127.0.0.1",
+    "build:renderer": "tsc -p tsconfig.app.json --noEmit && vite build",
+    "build": "tsc -b && vite build",
+    "build:electron": "tsc -p tsconfig.electron.json --noEmit && esbuild electron/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/main.cjs && esbuild electron/preload.cts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs",
+    "build:tauri": "tauri build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:electron-app": "tsc -b && npm run build:electron && vite build",
+    "clean:release": "node -e \"const fs=require('fs');const path=require('path');fs.mkdirSync('release',{recursive:true});for(const name of ['win-unpacked','builder-debug.yml','builder-effective-config.yaml'])fs.rmSync(path.join('release',name),{recursive:true,force:true});\"",
+    "clean:release:win": "npm run clean:release",
+    "prune:release:win": "npm run clean:release",
+    "copy:tauri:win": "node -e \"const fs=require('fs');const path=require('path');const out='release';fs.mkdirSync(out,{recursive:true});const source=path.join('src-tauri','target','release','quick-batch-renamer.exe');const target=path.join(out,'快捷批量重命名.exe');if(fs.existsSync(target)){const backupDir=path.join(out,'backup');fs.mkdirSync(backupDir,{recursive:true});const stamp=new Date().toISOString().replace(/[:.]/g,'-');fs.copyFileSync(target,path.join(backupDir,'快捷批量重命名-windows-before-copy-'+stamp+'.exe'));}fs.copyFileSync(source,target);console.log(target);\"",
+    "dist": "npm run dist:tauri:win",
+    "dist:tauri": "tauri build",
+    "dist:tauri:win": "tauri build --bundles nsis && npm run copy:tauri:win",
+    "dist:tauri:mac": "tauri build --bundles app,dmg",
+    "dist:tauri:mac:portable": "tauri build --bundles app --no-sign && bash scripts/package-macos-portable.sh",
+    "dist:tauri:mac:unsigned": "tauri build --bundles app,dmg --no-sign",
+    "dist:tauri:mac:arm64": "tauri build --target aarch64-apple-darwin --bundles app,dmg",
+    "dist:tauri:mac:x64": "tauri build --target x86_64-apple-darwin --bundles app,dmg",
+    "dist:electron:win": "npm run build:electron-app && electron-builder --win portable --x64 --config.directories.output=release-electron"
+  },
+  "build": {
+    "appId": "com.local.quick-batch-renamer",
+    "productName": "快捷批量重命名",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "artifactName": "快捷批量重命名.exe",
+      "executableName": "quick-batch-renamer",
+      "asar": false,
+      "target": "portable",
+      "icon": "build/icon.ico"
+    }
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-dialog": "^2.7.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@tauri-apps/cli": "^2.10.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^24.12.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "concurrently": "^9.2.1",
+    "electron": "^41.2.1",
+    "electron-builder": "^26.8.1",
+    "esbuild": "^0.27.7",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "jsdom": "^29.0.2",
+    "tsx": "^4.21.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.58.0",
+    "vite": "^8.0.4",
+    "vitest": "^4.1.4",
+    "wait-on": "^9.0.5"
+  }
+}

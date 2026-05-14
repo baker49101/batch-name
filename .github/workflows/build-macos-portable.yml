@@ -1,0 +1,38 @@
+name: Build macOS Portable
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos-portable:
+    name: Build macOS portable app
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build portable macOS app
+        run: npm run dist:tauri:mac:portable
+
+      - name: Upload macOS portable app
+        uses: actions/upload-artifact@v4
+        with:
+          name: quick-batch-renamer-macos-portable
+          path: release-macos/*.zip
+          if-no-files-found: error
