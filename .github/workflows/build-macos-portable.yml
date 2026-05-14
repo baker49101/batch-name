@@ -30,12 +30,31 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Build portable macOS app
-        run: npm run dist:tauri:mac:portable
+      - name: Build macOS app and dmg
+        run: npm run dist:tauri:mac:unsigned
+
+      - name: Ad-hoc sign macOS app
+        run: |
+          APP_PATH="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -type d | head -n 1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app bundle found" >&2
+            exit 1
+          fi
+          codesign --force --deep --sign - "$APP_PATH"
+
+      - name: Package portable macOS app
+        run: bash scripts/package-macos-portable.sh
 
       - name: Upload macOS portable app
         uses: actions/upload-artifact@v4
         with:
           name: quick-batch-renamer-macos-portable
           path: release-macos/*.zip
+          if-no-files-found: error
+
+      - name: Upload macOS dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: quick-batch-renamer-macos-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
