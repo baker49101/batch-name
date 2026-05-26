@@ -11,9 +11,11 @@ import type {
   PrefixSuffixRule,
   RenameJob,
   RenamePreview,
+  RenameExecutionResult,
   RenameRule,
   ReplaceRule,
   SortMode,
+  UndoResult,
 } from './types.js'
 
 const WINDOWS_ILLEGAL_CHARS = /[<>:"/\\|?*]/g
@@ -100,6 +102,22 @@ interface RenameDraft {
   extension: string
   skipped: boolean
   skipMessage: string
+  keepOriginalName: boolean
+  generatedNameStarted: boolean
+  prefixInsertionIndex: number
+  pendingPrefixSeparator: string
+}
+
+interface NameFragment {
+  value: string
+  start: number
+  end: number
+}
+
+interface RecoverablePrefixToken {
+  kind: 'keyword' | 'number' | 'date'
+  start: number
+  end: number
 }
 
 export const defaultFilters = {
@@ -122,7 +140,7 @@ export function buildRenamePreviews(job: RenameJob): RenamePreview[] {
       return makePreview(item, item.name, item.path, 'skipped', filterMessage, [], false)
     }
 
-    const draft = applyRules(item, job.rules, index, platform)
+    const draft = applyRules(item, job.rules, index, platform, job.keepOriginalName ?? false)
     const targetName = composeName(draft.baseName, draft.extension, item.kind)
     const targetPath = joinPath(item.parentDir, targetName)
     const warnings: string[] = []
@@ -185,12 +203,17 @@ export function applyRules(
   rules: RenameRule[],
   index: number,
   platform: DesktopPlatform = 'windows',
+  keepOriginalName = false,
 ): RenameDraft {
   const draft: RenameDraft = {
     baseName: item.baseName,
     extension: item.extension,
     skipped: false,
     skipMessage: '',
+    keepOriginalName,
+    generatedNameStarted: false,
+    prefixInsertionIndex: 0,
+    pendingPrefixSeparator: '',
   }
 
   for (const rule of rules) {
@@ -223,6 +246,9 @@ export function applyRules(
         break
       case 'csvMap':
         applyCsvMapRule(draft, rule, item)
+        break
+      case 'misoperationCleanup':
+        applyMisoperationCleanupRule(draft)
         break
       default:
         break
@@ -285,6 +311,52 @@ export function makeRuleId(prefix: string): string {
 
 export function normalizePathKey(value: string): string {
   return value.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase()
+}
+
+export type SelectionSource = 'files' | 'folders' | 'paths'
+
+export function getRefreshPathsAfterExecute(
+  files: FileItem[],
+  result: RenameExecutionResult,
+  source: SelectionSource,
+  selectedPaths: string[],
+): string[] {
+  if (source === 'folders') return uniquePaths(selectedPaths)
+  if (source === 'files' || (source === 'paths' && selectedPathsAreLoadedFiles(files, selectedPaths))) {
+    return getExecuteRefreshFilePaths(files, result)
+  }
+
+  return uniquePaths(files.map((file) => file.parentDir))
+}
+
+export function getRefreshPathsAfterUndo(files: FileItem[], result: UndoResult, source: SelectionSource, selectedPaths: string[]): string[] {
+  if (source === 'folders') return uniquePaths(selectedPaths)
+  if (source === 'files' || (source === 'paths' && selectedPathsAreLoadedFiles(files, selectedPaths))) {
+    return getUndoRefreshFilePaths(files, result)
+  }
+
+  return uniquePaths(files.map((file) => file.parentDir))
+}
+
+function getExecuteRefreshFilePaths(files: FileItem[], result: RenameExecutionResult): string[] {
+  const paths = result.items.map((item) => (item.success ? item.targetPath : item.originalPath))
+  return uniquePaths(paths.length > 0 ? paths : files.map((file) => file.path))
+}
+
+function getUndoRefreshFilePaths(files: FileItem[], result: UndoResult): string[] {
+  const paths = result.items.map((item) => (item.restored ? item.originalPath : item.targetPath))
+  return uniquePaths(paths.length > 0 ? paths : files.map((file) => file.path))
+}
+
+function selectedPathsAreLoadedFiles(files: FileItem[], selectedPaths: string[]): boolean {
+  if (selectedPaths.length === 0 || files.length === 0) return false
+
+  const loadedFileKeys = new Set(files.filter((file) => file.kind === 'file').map((file) => normalizePathKey(file.path)))
+  return selectedPaths.every((selectedPath) => loadedFileKeys.has(normalizePathKey(selectedPath)))
+}
+
+function uniquePaths(paths: string[]): string[] {
+  return [...new Set(paths.filter(Boolean))]
 }
 
 function joinPath(parentDir: string, name: string): string {
@@ -356,15 +428,13 @@ function markDuplicateTargets(previews: RenamePreview[]): RenamePreview[] {
 
 function applyNumberRule(draft: RenameDraft, rule: NumberRule, index: number): void {
   const value = String(rule.start + index * rule.step).padStart(Math.max(1, rule.pad), '0')
-  const token = joinToken(value, rule.separator, rule.position)
-  draft.baseName = rule.position === 'prefix' ? `${token}${draft.baseName}` : `${draft.baseName}${token}`
+  applyGeneratedToken(draft, value, rule.separator, rule.position)
 }
 
 function applyDateRule(draft: RenameDraft, rule: DateRule, item: FileItem): void {
   const source = rule.source === 'createdAt' ? item.createdAt : rule.source === 'modifiedAt' ? item.modifiedAt : new Date().toISOString()
   const value = formatDate(new Date(source), rule.format)
-  const token = joinToken(value, rule.separator, rule.position)
-  draft.baseName = rule.position === 'prefix' ? `${token}${draft.baseName}` : `${draft.baseName}${token}`
+  applyGeneratedToken(draft, value, rule.separator, rule.position)
 }
 
 function applyKeywordRule(draft: RenameDraft, rule: KeywordRule): void {
@@ -389,8 +459,7 @@ function applyKeywordRule(draft: RenameDraft, rule: KeywordRule): void {
     return
   }
 
-  const token = joinToken(keyword, rule.separator, rule.position)
-  draft.baseName = rule.position === 'prefix' ? `${token}${draft.baseName}` : `${draft.baseName}${token}`
+  applyGeneratedToken(draft, keyword, rule.separator, rule.position)
 }
 
 function applyReplaceRule(draft: RenameDraft, rule: ReplaceRule): void {
@@ -436,7 +505,14 @@ function applyCleanupRule(draft: RenameDraft, rule: CleanupRule, platform: Deskt
 }
 
 function applyPrefixSuffixRule(draft: RenameDraft, rule: PrefixSuffixRule): void {
+  if (!draft.keepOriginalName && !draft.generatedNameStarted) {
+    draft.baseName = `${rule.prefix}${rule.suffix}`
+    draft.generatedNameStarted = true
+    return
+  }
+
   draft.baseName = `${rule.prefix}${draft.baseName}${rule.suffix}`
+  draft.generatedNameStarted = true
 }
 
 function applyCaseRule(draft: RenameDraft, rule: CaseRule): void {
@@ -461,7 +537,221 @@ function applyCsvMapRule(draft: RenameDraft, rule: CsvMapRule, item: FileItem): 
 
   const next = splitFileName(mapped.trim())
   draft.baseName = next.baseName
+  draft.generatedNameStarted = true
   if (next.extension) draft.extension = next.extension
+}
+
+function applyMisoperationCleanupRule(draft: RenameDraft): void {
+  const cleaned = stripMisoperationPrefix(draft.baseName)
+  if (!cleaned) return
+  draft.baseName = cleaned
+}
+
+function stripMisoperationPrefix(baseName: string): string | null {
+  return stripKeywordNumberDateGeneratedPrefix(baseName) ?? stripNumberDateGeneratedPrefix(baseName) ?? stripRepeatedGeneratedPrefixGroups(baseName)
+}
+
+function stripKeywordNumberDateGeneratedPrefix(baseName: string): string | null {
+  const tokens = getRecoverablePrefixTokens(baseName)
+  let cleaned: string | null = null
+
+  for (let prefixLength = 3; prefixLength < tokens.length; prefixLength += 1) {
+    const prefix = tokens.slice(0, prefixLength)
+    const firstGeneratedIndex = prefix.findIndex((token) => token.kind !== 'keyword')
+    if (firstGeneratedIndex <= 0) continue
+
+    const generatedTokens = prefix.slice(firstGeneratedIndex)
+    if (!generatedTokens.every((token) => token.kind === 'number' || token.kind === 'date')) continue
+    if (!generatedTokens.some((token) => token.kind === 'number') || !generatedTokens.some((token) => token.kind === 'date')) continue
+
+    const candidate = baseName.slice(prefix[prefix.length - 1].end).replace(/^[\s_-]+/g, '')
+    if (!hasReadableBaseName(candidate)) continue
+    cleaned = candidate
+  }
+
+  return cleaned
+}
+
+function getRecoverablePrefixTokens(baseName: string): RecoverablePrefixToken[] {
+  const fragments = getNameFragments(baseName)
+  const tokens: RecoverablePrefixToken[] = []
+  let consumedUntil = 0
+
+  for (const fragment of fragments) {
+    if (fragment.start < consumedUntil) continue
+
+    const date = matchGeneratedDateToken(baseName.slice(fragment.start))
+    if (date) {
+      const end = fragment.start + date.length
+      tokens.push({ kind: 'date', start: fragment.start, end })
+      consumedUntil = end
+      continue
+    }
+
+    if (isGeneratedNumberFragment(fragment.value)) {
+      tokens.push({ kind: 'number', start: fragment.start, end: fragment.end })
+      consumedUntil = fragment.end
+      continue
+    }
+
+    tokens.push({ kind: 'keyword', start: fragment.start, end: fragment.end })
+    consumedUntil = fragment.end
+  }
+
+  return tokens
+}
+
+function stripNumberDateGeneratedPrefix(baseName: string): string | null {
+  let cursor = 0
+  let removableEnd = 0
+  let tokenCount = 0
+
+  while (cursor < baseName.length) {
+    const token = matchGeneratedPrefixToken(baseName.slice(cursor))
+    if (!token) break
+
+    const afterToken = cursor + token.length
+    const separator = matchGeneratedSeparator(baseName.slice(afterToken))
+    if (!separator) break
+
+    cursor = afterToken + separator.length
+    removableEnd = cursor
+    tokenCount += 1
+  }
+
+  if (tokenCount === 0 || removableEnd === 0) return null
+
+  const cleaned = baseName.slice(removableEnd).replace(/^[\s_-]+/g, '')
+  if (!hasReadableBaseName(cleaned)) return null
+  return cleaned
+}
+
+function stripRepeatedGeneratedPrefixGroups(baseName: string): string | null {
+  const fragments = getNameFragments(baseName)
+  const maxGroupSize = Math.min(8, Math.floor(fragments.length / 2))
+
+  for (let groupSize = 1; groupSize <= maxGroupSize; groupSize += 1) {
+    if (!groupContainsGeneratedToken(fragments, 0, groupSize)) continue
+
+    let repeatCount = 1
+    while (
+      (repeatCount + 1) * groupSize <= fragments.length &&
+      fragmentGroupsEqual(fragments, 0, repeatCount * groupSize, groupSize)
+    ) {
+      repeatCount += 1
+    }
+
+    if (repeatCount < 2) continue
+
+    const removableEnd = fragments[repeatCount * groupSize - 1].end
+    const cleaned = baseName.slice(removableEnd).replace(/^[\s_-]+/g, '')
+    if (!hasReadableBaseName(cleaned)) continue
+    return cleaned
+  }
+
+  return null
+}
+
+function getNameFragments(value: string): NameFragment[] {
+  return Array.from(value.matchAll(/[^\s_-]+/g), (match) => ({
+    value: match[0],
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }))
+}
+
+function fragmentGroupsEqual(fragments: NameFragment[], leftStart: number, rightStart: number, length: number): boolean {
+  for (let offset = 0; offset < length; offset += 1) {
+    if (normalizeFragment(fragments[leftStart + offset].value) !== normalizeFragment(fragments[rightStart + offset].value)) {
+      return false
+    }
+  }
+  return true
+}
+
+function groupContainsGeneratedToken(fragments: NameFragment[], start: number, length: number): boolean {
+  return fragments.slice(start, start + length).some((fragment) => isGeneratedPrefixFragment(fragment.value))
+}
+
+function isGeneratedPrefixFragment(value: string): boolean {
+  if (matchGeneratedDateToken(value)) return true
+
+  return isGeneratedNumberFragment(value)
+}
+
+function isGeneratedNumberFragment(value: string): boolean {
+  const numbered = value.match(/^\d{1,4}$/)
+  if (!numbered) return false
+  return !/^(19|20)\d{2}$/.test(value)
+}
+
+function normalizeFragment(value: string): string {
+  return value.toLowerCase()
+}
+
+function matchGeneratedPrefixToken(value: string): string {
+  const dated = matchGeneratedDateToken(value)
+  if (dated) return dated
+
+  const numbered = value.match(/^\d{1,4}(?=$|[\s_-])/)
+  if (!numbered) return ''
+  const token = numbered[0]
+  if (/^(19|20)\d{2}$/.test(token)) return ''
+  return token
+}
+
+function matchGeneratedDateToken(value: string): string {
+  const separated = value.match(/^(19|20)\d{2}([-_])(0[1-9]|1[0-2])\2(0[1-9]|[12]\d|3[01])(?=$|[\s_-])/)
+  if (separated) return separated[0]
+
+  const compact = value.match(/^(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?=$|[\s_-])/)
+  return compact?.[0] ?? ''
+}
+
+function matchGeneratedSeparator(value: string): string {
+  return value.match(/^[\s_-]+/)?.[0] ?? ''
+}
+
+function hasReadableBaseName(value: string): boolean {
+  return /[^\d\s_-]/.test(value)
+}
+
+function applyGeneratedToken(draft: RenameDraft, value: string, separator: string, position: 'prefix' | 'suffix'): void {
+  if (position === 'prefix') {
+    applyPrefixGeneratedToken(draft, value, separator)
+    return
+  }
+
+  if (!draft.keepOriginalName && !draft.generatedNameStarted) {
+    draft.baseName = value
+    draft.generatedNameStarted = true
+    return
+  }
+
+  const token = joinToken(value, separator, position)
+  draft.baseName = `${draft.baseName}${token}`
+  draft.generatedNameStarted = true
+}
+
+function applyPrefixGeneratedToken(draft: RenameDraft, value: string, separator: string): void {
+  if (!draft.keepOriginalName && !draft.generatedNameStarted) {
+    draft.baseName = value
+    draft.prefixInsertionIndex = value.length
+    draft.pendingPrefixSeparator = separator
+    draft.generatedNameStarted = true
+    return
+  }
+
+  const insertionIndex = Math.min(draft.prefixInsertionIndex, draft.baseName.length)
+  const hasContentAfterInsertion = insertionIndex < draft.baseName.length
+  const leadingSeparator = !hasContentAfterInsertion && insertionIndex > 0 ? draft.pendingPrefixSeparator : ''
+  const trailingSeparator = hasContentAfterInsertion ? separator : ''
+  const token = `${leadingSeparator}${value}${trailingSeparator}`
+
+  draft.baseName = `${draft.baseName.slice(0, insertionIndex)}${token}${draft.baseName.slice(insertionIndex)}`
+  draft.prefixInsertionIndex = insertionIndex + token.length
+  draft.pendingPrefixSeparator = separator
+  draft.generatedNameStarted = true
 }
 
 function joinToken(value: string, separator: string, position: 'prefix' | 'suffix'): string {

@@ -85,5 +85,7 @@ const tauriApi: RenameToolApi = {
   },
 }
 
-export const desktopApi: RenameToolApi | undefined = window.renameTool ?? (isTauri() ? tauriApi : undefined)
+const browserRenameTool = typeof window === 'undefined' ? undefined : window.renameTool
+
+export const desktopApi: RenameToolApi | undefined = browserRenameTool ?? (isTauri() ? tauriApi : undefined)
 export const hasDesktopApi = Boolean(desktopApi)

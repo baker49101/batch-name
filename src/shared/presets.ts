@@ -27,7 +27,7 @@ export const presetRules: RenamePreset[] = [
         start: 1,
         step: 1,
         pad: 3,
-        position: 'prefix',
+        position: 'suffix',
         separator: '_',
       },
       {

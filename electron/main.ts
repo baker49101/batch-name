@@ -142,13 +142,15 @@ export async function executeRename(job: RenameJob): Promise<RenameExecutionResu
     })),
   }
 
-  await ensureUserDataDir()
-  await fs.writeFile(undoRecordPath(), JSON.stringify(record, null, 2), 'utf8')
+  if (record.entries.some((entry) => entry.success)) {
+    await appendUndoRecord(record)
+  }
   return { batchId, executedAt, items }
 }
 
 export async function undoLastRename(): Promise<UndoResult | null> {
-  const record = await readJson<UndoRecord | null>(undoRecordPath(), null)
+  const history = await readUndoHistory()
+  const record = history.pop()
   if (!record) return null
 
   const items: UndoResult['items'] = []
@@ -163,6 +165,7 @@ export async function undoLastRename(): Promise<UndoResult | null> {
     }
   }
 
+  await writeUndoHistory(history)
   return { batchId: record.batchId, items }
 }
 
@@ -279,6 +282,29 @@ async function readJson<T>(filePath: string, fallback: T): Promise<T> {
   } catch {
     return fallback
   }
+}
+
+async function appendUndoRecord(record: UndoRecord): Promise<void> {
+  const history = await readUndoHistory()
+  history.push(record)
+  await writeUndoHistory(history)
+}
+
+async function readUndoHistory(): Promise<UndoRecord[]> {
+  const value = await readJson<unknown>(undoRecordPath(), [])
+  if (Array.isArray(value)) return value.filter(isUndoRecord)
+  return isUndoRecord(value) ? [value] : []
+}
+
+async function writeUndoHistory(history: UndoRecord[]): Promise<void> {
+  await ensureUserDataDir()
+  await fs.writeFile(undoRecordPath(), JSON.stringify(history.slice(-100), null, 2), 'utf8')
+}
+
+function isUndoRecord(value: unknown): value is UndoRecord {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Partial<UndoRecord>
+  return typeof record.batchId === 'string' && typeof record.executedAt === 'string' && Array.isArray(record.entries)
 }
 
 function undoRecordPath(): string {

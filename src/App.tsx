@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { desktopApi, hasDesktopApi } from './desktopApi'
 import { parseCsvMappings } from './shared/csv'
-import { buildRenamePreviews, defaultFilters, makeRuleId } from './shared/renameEngine'
+import { buildRenamePreviews, defaultFilters, getRefreshPathsAfterExecute, getRefreshPathsAfterUndo, makeRuleId } from './shared/renameEngine'
 import { cloneRules, presetRules, suggestPreset } from './shared/presets'
 import type {
   CleanupRule,
@@ -22,9 +22,13 @@ import type {
   SortMode,
 } from './shared/types'
 
+type SelectionSource = 'files' | 'folders' | 'paths'
+
 function App() {
   const [files, setFiles] = useState<FileItem[]>([])
+  const [selection, setSelection] = useState<{ source: SelectionSource; paths: string[] }>({ source: 'paths', paths: [] })
   const [rules, setRules] = useState<RenameRule[]>(() => cloneRules(presetRules[0].rules))
+  const [keepOriginalName, setKeepOriginalName] = useState(false)
   const [filters, setFilters] = useState<RenameFilters>(defaultFilters)
   const [sortMode, setSortMode] = useState<SortMode>('nameAsc')
   const [selectedPreset, setSelectedPreset] = useState(presetRules[0].id)
@@ -43,8 +47,9 @@ function App() {
       filters,
       sortMode,
       platform,
+      keepOriginalName,
     }),
-    [files, filters, platform, rules, sortMode],
+    [files, filters, keepOriginalName, platform, rules, sortMode],
   )
 
   useEffect(() => {
@@ -102,19 +107,22 @@ function App() {
   const recommendedPreset = useMemo(() => suggestPreset(files), [files])
 
   const scanSelectedPaths = useCallback(
-    async (paths: string[]) => {
+    async (paths: string[], source: SelectionSource = 'paths') => {
       if (paths.length === 0) return
 
       if (!hasDesktopApi) {
         const sampleFiles = createSampleFiles()
         setFiles(sampleFiles)
+        setSelection({ source, paths })
         setNotice('当前在浏览器预览模式，已载入示例文件。桌面版会读取真实路径。')
         return
       }
 
       try {
         const scanned = await desktopApi!.scanPaths(paths, filters.recursive)
+        const effectiveSource = source === 'paths' && selectedPathsAreScannedFiles(paths, scanned) ? 'files' : source
         setFiles(scanned)
+        setSelection({ source: effectiveSource, paths })
         const suggested = suggestPreset(scanned)
         setSelectedPreset(suggested)
         setNotice(scanned.length > 0 ? `已导入 ${scanned.length} 个项目，推荐使用“${presetRules.find((preset) => preset.id === suggested)?.name}”。` : '没有扫描到可处理项目。')
@@ -130,7 +138,7 @@ function App() {
 
     let unlisten: (() => void) | undefined
     void desktopApi.onPathsDropped((paths) => {
-      void scanSelectedPaths(paths)
+      void scanSelectedPaths(paths, 'paths')
     }).then((cleanup) => {
       unlisten = cleanup
     })
@@ -146,7 +154,7 @@ function App() {
       return
     }
     const paths = await desktopApi!.chooseFiles()
-    await scanSelectedPaths(paths)
+    await scanSelectedPaths(paths, 'files')
   }
 
   async function chooseFolders() {
@@ -155,7 +163,7 @@ function App() {
       return
     }
     const paths = await desktopApi!.chooseFolders()
-    await scanSelectedPaths(paths)
+    await scanSelectedPaths(paths, 'folders')
   }
 
   async function importTypedPaths() {
@@ -163,7 +171,7 @@ function App() {
       .split(/\r?\n|;/)
       .map((value) => value.trim().replace(/^"|"$/g, ''))
       .filter(Boolean)
-    await scanSelectedPaths(paths)
+    await scanSelectedPaths(paths, 'paths')
   }
 
   async function importCsv() {
@@ -205,7 +213,7 @@ function App() {
       const success = result.items.filter((item) => item.success).length
       const failed = result.items.length - success
       setNotice(`执行完成：成功 ${success} 项，跳过或失败 ${failed} 项。`)
-      const rescanned = await desktopApi!.scanPaths([...new Set(files.map((file) => file.parentDir))], filters.recursive)
+      const rescanned = await desktopApi!.scanPaths(getRefreshPathsAfterExecute(files, result, selection.source, selection.paths), filters.recursive)
       setFiles(rescanned)
     } catch (error) {
       setNotice(`执行失败：${getErrorMessage(error)}`)
@@ -229,8 +237,21 @@ function App() {
     const restored = result.items.filter((item) => item.restored).length
     const failed = result.items.length - restored
     setNotice(`撤销完成：恢复 ${restored} 项，失败 ${failed} 项。`)
-    const rescanned = await desktopApi!.scanPaths([...new Set(files.map((file) => file.parentDir))], filters.recursive)
+    const rescanned = await desktopApi!.scanPaths(getRefreshPathsAfterUndo(files, result, selection.source, selection.paths), filters.recursive)
     setFiles(rescanned)
+  }
+
+  function applyRecoveryMode() {
+    setRules([
+      {
+        id: makeRuleId('recover'),
+        type: 'misoperationCleanup',
+        enabled: true,
+      },
+    ])
+    setSelectedPreset('recovery')
+    setKeepOriginalName(false)
+    setNotice('已启用误操作恢复。请检查右侧预览，确认后再执行。')
   }
 
   function applyPreset(presetId: string) {
@@ -299,7 +320,15 @@ function App() {
                 <h2>文件</h2>
                 <p>{files.length > 0 ? `已载入 ${files.length} 个项目` : '拖进来，或者选择文件夹'}</p>
               </div>
-              <button className="text-button" onClick={() => setFiles([])}>清空</button>
+              <button
+                className="text-button"
+                onClick={() => {
+                  setFiles([])
+                  setSelection({ source: 'paths', paths: [] })
+                }}
+              >
+                清空
+              </button>
             </div>
 
             <div
@@ -364,6 +393,16 @@ function App() {
             </div>
           </section>
 
+          <section className="pane recovery-pane">
+            <div className="pane-heading">
+              <div>
+                <h2>误操作恢复</h2>
+                <p>保守清理开头关键词、编号、日期和分隔符</p>
+              </div>
+            </div>
+            <button className="button button-secondary wide" onClick={applyRecoveryMode}>启用保守清理</button>
+          </section>
+
           <section className="pane">
             <div className="pane-heading">
               <div>
@@ -392,12 +431,23 @@ function App() {
               <h2>规则流水线</h2>
               <p>从上到下执行，每一步都能关掉或调整顺序</p>
             </div>
-            <div className="rule-actions">
-              <button onClick={() => addRule('number')}>编号</button>
-              <button onClick={() => addRule('date')}>日期</button>
-              <button onClick={() => addRule('keyword')}>关键词</button>
-              <button onClick={() => addRule('replace')}>替换</button>
-              <button onClick={() => addRule('cleanup')}>清理</button>
+            <div className="rule-heading-tools">
+              <div className="rule-actions">
+                <button onClick={() => addRule('number')}>编号</button>
+                <button onClick={() => addRule('date')}>日期</button>
+                <button onClick={() => addRule('keyword')}>关键词</button>
+                <button onClick={() => addRule('replace')}>替换</button>
+                <button onClick={() => addRule('cleanup')}>清理</button>
+                <button onClick={() => addRule('misoperationCleanup')}>误操作恢复</button>
+              </div>
+              <label className="check-row global-rule-option">
+                <input
+                  type="checkbox"
+                  checked={keepOriginalName}
+                  onChange={(event) => setKeepOriginalName(event.target.checked)}
+                />
+                保留原文件名字
+              </label>
             </div>
           </div>
 
@@ -579,6 +629,10 @@ function renderRuleFields(rule: RenameRule, onChange: (patch: Partial<RenameRule
     )
   }
 
+  if (rule.type === 'misoperationCleanup') {
+    return <span className="mapping-count">只处理文件名开头的关键词、编号、日期和分隔符</span>
+  }
+
   return <span className="mapping-count">CSV 映射 {Object.keys(rule.mappings).length} 条</span>
 }
 
@@ -594,18 +648,20 @@ function PreviewTable({ previews }: { previews: RenamePreview[] }) {
 
   return (
     <div className="preview-table">
-      <div className="preview-row header">
-        <span>状态</span>
-        <span>原文件名</span>
-        <span>新文件名</span>
+      <div className="preview-table-grid">
+        <span className="preview-cell preview-heading">状态</span>
+        <span className="preview-cell preview-heading">原文件名</span>
+        <span className="preview-cell preview-heading">新文件名</span>
+        {previews.map((preview) => (
+          <Fragment key={preview.id}>
+            <span className={`preview-cell preview-status-cell ${preview.status}`}>
+              <span className="status-pill">{getStatusLabel(preview.status)}</span>
+            </span>
+            <span className={`preview-cell file-name ${preview.status}`} title={preview.originalPath}>{preview.originalName}</span>
+            <span className={`preview-cell file-name target ${preview.status}`} title={preview.message}>{preview.targetName}</span>
+          </Fragment>
+        ))}
       </div>
-      {previews.map((preview) => (
-        <div key={preview.id} className={`preview-row ${preview.status}`}>
-          <span className="status-pill">{getStatusLabel(preview.status)}</span>
-          <span className="file-name" title={preview.originalPath}>{preview.originalName}</span>
-          <span className="file-name target" title={preview.message}>{preview.targetName}</span>
-        </div>
-      ))}
     </div>
   )
 }
@@ -678,6 +734,7 @@ function createRule(type: RenameRule['type']): RenameRule {
   if (type === 'prefixSuffix') return { id: makeRuleId('prefix'), type, enabled: true, prefix: '', suffix: '' }
   if (type === 'case') return { id: makeRuleId('case'), type, enabled: true, mode: 'lower' }
   if (type === 'extension') return { id: makeRuleId('extension'), type, enabled: true, mode: 'lower', value: '' }
+  if (type === 'misoperationCleanup') return { id: makeRuleId('recover'), type, enabled: true }
   return { id: makeRuleId('csv'), type: 'csvMap', enabled: true, mappings: {}, matchBy: 'name' }
 }
 
@@ -692,12 +749,13 @@ function getRuleTitle(rule: RenameRule): string {
     case: '大小写',
     extension: '扩展名',
     csvMap: 'CSV 映射',
+    misoperationCleanup: '误操作恢复',
   }
   return titles[rule.type]
 }
 
 function getRuleDescription(rule: RenameRule): string {
-  if (rule.type === 'number') return `按当前排序添加 ${String(rule.start).padStart(rule.pad, '0')}、${String(rule.start + rule.step).padStart(rule.pad, '0')}`
+  if (rule.type === 'number') return `按当前排序生成 ${String(rule.start).padStart(rule.pad, '0')}、${String(rule.start + rule.step).padStart(rule.pad, '0')}`
   if (rule.type === 'date') return `使用${rule.source === 'now' ? '今天' : rule.source === 'createdAt' ? '创建时间' : '修改时间'}，格式 ${rule.format}`
   if (rule.type === 'keyword') return rule.mode === 'insert' ? `插入“${rule.keyword}”` : `${rule.mode === 'replace' ? '替换' : rule.mode === 'remove' ? '删除' : '筛选'}“${rule.keyword}”`
   if (rule.type === 'replace') return rule.useRegex ? '高级正则替换' : '普通文本替换'
@@ -705,7 +763,18 @@ function getRuleDescription(rule: RenameRule): string {
   if (rule.type === 'prefixSuffix') return '固定文字加在文件名前后'
   if (rule.type === 'case') return '统一英文大小写'
   if (rule.type === 'extension') return '只处理文件扩展名'
+  if (rule.type === 'misoperationCleanup') return '保守移除开头关键词、编号、日期和分隔符'
   return '按表格中的原文件名和新文件名一一对应'
+}
+
+function selectedPathsAreScannedFiles(paths: string[], scanned: FileItem[]): boolean {
+  if (paths.length === 0 || paths.length !== scanned.length) return false
+  const pathKeys = new Set(paths.map(normalizeUiPathKey))
+  return scanned.every((item) => item.kind === 'file' && pathKeys.has(normalizeUiPathKey(item.path)))
+}
+
+function normalizeUiPathKey(value: string): string {
+  return value.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase()
 }
 
 function getStatusLabel(status: RenamePreview['status']): string {

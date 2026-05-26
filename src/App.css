@@ -140,6 +140,17 @@ label {
   gap: 8px;
 }
 
+.rule-heading-tools {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.global-rule-option {
+  color: #3f4a52;
+  font-size: 13px;
+}
+
 .path-input {
   margin-top: 12px;
 }
@@ -254,6 +265,10 @@ label {
 .split-fields {
   display: grid;
   gap: 10px;
+  margin-top: 14px;
+}
+
+.recovery-pane .button {
   margin-top: 14px;
 }
 
@@ -381,17 +396,22 @@ label {
 }
 
 .preview-table {
-  display: grid;
+  display: block;
   max-height: 560px;
   overflow: auto;
   border: 1px solid #dfe4e7;
   border-radius: 8px;
 }
 
-.preview-row {
+.preview-table-grid {
   display: grid;
-  grid-template-columns: 76px minmax(150px, 1fr) minmax(150px, 1fr);
-  gap: 10px;
+  grid-template-columns: 76px minmax(220px, max-content) minmax(520px, max-content);
+  width: max-content;
+  min-width: 100%;
+}
+
+.preview-cell {
+  display: flex;
   align-items: center;
   min-height: 42px;
   padding: 8px 10px;
@@ -399,7 +419,7 @@ label {
   background: #ffffff;
 }
 
-.preview-row.header {
+.preview-heading {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -410,16 +430,16 @@ label {
   font-weight: 700;
 }
 
-.preview-row.error {
+.preview-cell.error {
   background: #fff0ef;
 }
 
-.preview-row.warning {
+.preview-cell.warning {
   background: #fff8e8;
 }
 
-.preview-row.skipped,
-.preview-row.unchanged {
+.preview-cell.skipped,
+.preview-cell.unchanged {
   color: #7a8288;
 }
 
@@ -451,8 +471,8 @@ label {
 
 .file-name {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -520,7 +540,16 @@ label {
 
   .rule-controls,
   .stat-strip,
-  .preview-row {
+  .preview-table-grid {
     grid-template-columns: 1fr;
+  }
+
+  .preview-table-grid {
+    width: auto;
+  }
+
+  .file-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 }

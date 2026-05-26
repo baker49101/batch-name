@@ -107,6 +107,12 @@ export interface CsvMapRule {
   matchBy: 'name' | 'baseName'
 }
 
+export interface MisoperationCleanupRule {
+  id: string
+  type: 'misoperationCleanup'
+  enabled: boolean
+}
+
 export type RenameRule =
   | NumberRule
   | DateRule
@@ -117,6 +123,7 @@ export type RenameRule =
   | CaseRule
   | ExtensionRule
   | CsvMapRule
+  | MisoperationCleanupRule
 
 export interface RenameJob {
   files: FileItem[]
@@ -125,6 +132,7 @@ export interface RenameJob {
   sortMode: SortMode
   existingPaths?: string[]
   platform?: DesktopPlatform
+  keepOriginalName?: boolean
 }
 
 export type PreviewStatus = 'ready' | 'unchanged' | 'skipped' | 'warning' | 'error'

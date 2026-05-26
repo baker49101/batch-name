@@ -92,6 +92,8 @@ struct UndoResult {
     items: Vec<UndoResultItem>,
 }
 
+const UNDO_HISTORY_LIMIT: usize = 100;
+
 #[tauri::command]
 fn scan_paths(paths: Vec<String>, recursive: bool) -> Result<Vec<FileItem>, String> {
     let mut results = Vec::new();
@@ -181,10 +183,12 @@ fn execute_rename_previews(
                 target_name: item.preview.target_name.clone(),
                 success: item.success,
             })
-            .collect(),
+        .collect(),
     };
 
-    write_json(&undo_record_path(&app)?, &record)?;
+    if record.entries.iter().any(|entry| entry.success) {
+        append_undo_record(&undo_record_path(&app)?, record)?;
+    }
     Ok(RenameExecutionResult {
         batch_id,
         executed_at,
@@ -195,12 +199,13 @@ fn execute_rename_previews(
 #[tauri::command]
 fn undo_last_rename(app: AppHandle) -> Result<Option<UndoResult>, String> {
     let path = undo_record_path(&app)?;
-    if !path.exists() {
+    let mut history = read_undo_history(&path)?;
+    let Some(record) = history.pop() else {
         return Ok(None);
-    }
+    };
 
-    let record: UndoRecord = read_json(&path)?;
     let mut items = Vec::new();
+    let batch_id = record.batch_id;
 
     for entry in record.entries.into_iter().filter(|entry| entry.success).rev() {
         match rename_safely(&entry.target_path, &entry.original_path) {
@@ -217,8 +222,9 @@ fn undo_last_rename(app: AppHandle) -> Result<Option<UndoResult>, String> {
         }
     }
 
+    write_undo_history(&path, &history)?;
     Ok(Some(UndoResult {
-        batch_id: record.batch_id,
+        batch_id,
         items,
     }))
 }
@@ -402,6 +408,39 @@ fn app_data_file(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
     serde_json::from_str(&content).map_err(|error| error.to_string())
+}
+
+fn append_undo_record(path: &Path, record: UndoRecord) -> Result<(), String> {
+    let mut history = read_undo_history(path)?;
+    history.push(record);
+    if history.len() > UNDO_HISTORY_LIMIT {
+        history = history.split_off(history.len() - UNDO_HISTORY_LIMIT);
+    }
+    write_undo_history(path, &history)
+}
+
+fn read_undo_history(path: &Path) -> Result<Vec<UndoRecord>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&content).map_err(|error| error.to_string())?;
+    if let Some(items) = value.as_array() {
+        return items
+            .iter()
+            .cloned()
+            .map(|item| serde_json::from_value(item).map_err(|error| error.to_string()))
+            .collect();
+    }
+
+    serde_json::from_value(value)
+        .map(|record| vec![record])
+        .map_err(|error| error.to_string())
+}
+
+fn write_undo_history(path: &Path, history: &[UndoRecord]) -> Result<(), String> {
+    write_json(path, &history)
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
